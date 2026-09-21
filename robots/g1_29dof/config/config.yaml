@@ -4,9 +4,12 @@ FSM:
       id: 1
     FixStand:
       id: 2
-    Velocity:
+    BlindWalk:
       id: 3
       type: RLBase
+    DepthWalk:
+      id: 4
+      type: RLDepth
 
     Mimic_Dance_102: # uncomment to enable
       id: 101
@@ -35,7 +38,8 @@ FSM:
   FixStand:
     transitions: 
       Passive: LT + B.on_pressed
-      Velocity: RB + X.on_pressed
+      BlindWalk: RB + X.on_pressed
+      DepthWalk: RB + Y.on_pressed
     kp: [
       100., 100., 100., 150., 40., 40.,
       100., 100., 100., 150., 40., 40.,
@@ -60,18 +64,27 @@ FSM:
         0, -0.25,0,0.97,-0.15, 0,0
       ]
     ]
-  Velocity:
+  BlindWalk:
     transitions: 
       Passive: LT + B.on_pressed
+      FixStand: LB + X.on_pressed
       Mimic_Dance_102: LT(2s) + down.on_pressed
       Mimic_Gangnam_Style: LT(2s) + left.on_pressed
 
     policy_dir: config/policy/velocity
+    max_policy_step_ms: 40
+    max_target_delta_per_cycle: 0.02
+  DepthWalk:
+    transitions:
+      Passive: LT + B.on_pressed
+      FixStand: LB + Y.on_pressed
+    policy_dir: config/policy/depth/v0
+    max_policy_step_ms: 40
     # policy_dir: ../../../logs/rsl_rl/unitree_g1_29dof_velocity
   Mimic_Dance_102:
     transitions: 
       Passive: LT + B.on_pressed
-      Velocity: RB + X.on_pressed
+      BlindWalk: RB + X.on_pressed
     fps: 60
     motion_file: config/policy/mimic/dance_102/params/G1_Take_102.bvh_60hz.csv
     policy_dir: config/policy/mimic/dance_102/
@@ -80,10 +93,33 @@ FSM:
   Mimic_Gangnam_Style:
     transitions: 
       Passive: LT + B.on_pressed
-      Velocity: RB + X.on_pressed
+      BlindWalk: RB + X.on_pressed
     fps: 60
     motion_file: config/policy/mimic/gangnam_style/params/G1_gangnam_style_V01.bvh_60hz.csv
     policy_dir: config/policy/mimic/gangnam_style/
     time_start: 5.2
     time_end: 25.5
 
+depth:
+  source: ros2
+  topic: /camera/depth/image_rect_raw
+  camera_info_topic: /camera/depth/camera_info
+  crop: [120, 110, 240, 160]
+  output_size: [24, 16]
+  min_range: 0.3
+  max_range: 2.0
+  offset: -1.0
+  stale_timeout_ms: 100
+  min_valid_ratio: 0.01
+  max_consecutive_invalid_frames: 5
+  require_camera_info: true
+  strict_intrinsics: true
+  target_intrinsics: [24.1418, 24.1418, 12.25, 2.0]
+  intrinsics_relative_tolerance: 0.05
+  max_target_delta_per_cycle: 0.02
+  replay:
+    file: config/depth/replay_depth_m.txt
+    width: 480
+    height: 270
+    fps: 60.0
+    loop: true

@@ -69,7 +69,7 @@ public:
             term.add(term.func(this->env, term.params));
         }
 
-        if(use_gym_history)
+        if(group_use_gym_history_.at(group_name))
         {
             for(int h = 0; h < group_terms[0].history_length; ++h)
             {
@@ -94,20 +94,29 @@ public:
 protected:
     void _prapare_terms()
     {
-        // check whether have multiple input
-        bool only_one_input = this->cfg.begin()->second["params"].IsDefined(); // trick to check
+        if (!cfg || !cfg.IsMap() || cfg.size() == 0) {
+            throw std::runtime_error("Observations configuration is empty");
+        }
+
+        // Legacy single-input deploy.yaml stores observation terms directly.
+        const bool only_one_input = this->cfg.begin()->second["params"].IsDefined();
         if(only_one_input) {
-            group_obs_term_cfgs_["obs"] = _prepare_group_terms(this->cfg); // default group name
+            bool use_gym_history = false;
+            group_obs_term_cfgs_["obs"] = _prepare_group_terms(this->cfg, use_gym_history);
+            group_use_gym_history_["obs"] = use_gym_history;
         } else {
             for(auto group = this->cfg.begin(); group != this->cfg.end(); ++group)
             {
                 auto group_name = group->first.as<std::string>();
-                group_obs_term_cfgs_[group_name] = _prepare_group_terms(group->second);
+                bool use_gym_history = false;
+                group_obs_term_cfgs_[group_name] = _prepare_group_terms(group->second, use_gym_history);
+                group_use_gym_history_[group_name] = use_gym_history;
             }
         }
     }
 
-    std::vector<ObservationTermCfg> _prepare_group_terms(const YAML::Node & group_cfg)
+    std::vector<ObservationTermCfg> _prepare_group_terms(
+        const YAML::Node & group_cfg, bool& use_gym_history)
     {
         std::vector<ObservationTermCfg> terms;
         bool scale_first = false; // isaaclab default: clip first
@@ -129,6 +138,9 @@ protected:
             term_cfg.params = term_yaml_cfg["params"];
             term_cfg.scale_first = scale_first;
             term_cfg.history_length = term_yaml_cfg["history_length"].as<int>(1);
+            if (term_cfg.history_length <= 0) {
+                throw std::runtime_error("Observation history_length must be positive");
+            }
 
             auto term_name = it->first.as<std::string>();
             if(observations_map()[term_name] == nullptr) {
@@ -145,9 +157,24 @@ protected:
 
 
             auto obs = term_cfg.func(this->env, term_cfg.params);
+            if (obs.empty()) {
+                throw std::runtime_error("Observation term '" + term_name + "' returned no values");
+            }
             term_cfg.reset(obs);
 
             terms.push_back(term_cfg);
+        }
+        if (terms.empty()) {
+            throw std::runtime_error("Observation group has no terms");
+        }
+        if (use_gym_history) {
+            const int history_length = terms.front().history_length;
+            for (const auto& term : terms) {
+                if (term.history_length != history_length) {
+                    throw std::runtime_error(
+                        "All terms in a gym-history observation group must have equal history_length");
+                }
+            }
         }
         return terms;
     }
@@ -155,11 +182,9 @@ protected:
     const YAML::Node cfg;
     ManagerBasedRLEnv* env;
 
-    // whether to use gym type
-    bool use_gym_history = false; // Manually set in the configuration file
-
 private:
     std::unordered_map<std::string, std::vector<ObservationTermCfg>> group_obs_term_cfgs_;
+    std::unordered_map<std::string, bool> group_use_gym_history_;
 };
 
 };

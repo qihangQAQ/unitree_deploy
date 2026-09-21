@@ -9,10 +9,12 @@ namespace mdp
 
 inline bool bad_orientation(ManagerBasedRLEnv* env, float limit_angle = 1.0)
 {
+    std::lock_guard<std::mutex> lock(env->step_mutex);
     auto & asset = env->robot;
     auto & data = asset->data.projected_gravity_b;
-    return std::fabs(std::acos(-data[2])) > limit_angle;
+    const float gravity_z = std::clamp(-data[2], -1.0f, 1.0f);
+    return std::fabs(std::acos(gravity_z)) > limit_angle;
 }
 
-} 
+}
 } 

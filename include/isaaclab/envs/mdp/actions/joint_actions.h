@@ -8,6 +8,9 @@
 #include "isaaclab/envs/manager_based_rl_env.h"
 #include "isaaclab/manager/action_manager.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace isaaclab
 {
 
@@ -34,6 +37,8 @@ public:
         if(!cfg["clip"].IsNull()) {
             _clip = cfg["clip"].as<std::vector<std::vector<float> >>();
         }
+        validate_config();
+        reset();
     }
 
     virtual void process_actions(std::vector<float> actions)
@@ -77,10 +82,38 @@ public:
 
     void reset()
     {
-        _raw_actions.assign(_action_dim, 0.0f);
+        process_actions(std::vector<float>(_action_dim, 0.0f));
     }
 
 protected:
+    void validate_config()
+    {
+        const auto matches_dim = [this](const auto& values) {
+            return values.empty() || values.size() == static_cast<std::size_t>(_action_dim);
+        };
+        if (!matches_dim(_scale)) {
+            throw std::runtime_error("Action scale length does not match action dimension");
+        }
+        if (!matches_dim(_offset)) {
+            throw std::runtime_error("Action offset length does not match action dimension");
+        }
+        if (!matches_dim(_clip)) {
+            throw std::runtime_error("Action clip length does not match action dimension");
+        }
+        const auto all_finite = [](const std::vector<float>& values) {
+            return std::all_of(values.begin(), values.end(),
+                [](float value) { return std::isfinite(value); });
+        };
+        if (!all_finite(_scale) || !all_finite(_offset)) {
+            throw std::runtime_error("Action scale or offset contains NaN or Inf");
+        }
+        for (const auto& bounds : _clip) {
+            if (bounds.size() != 2 || !all_finite(bounds) || bounds[0] > bounds[1]) {
+                throw std::runtime_error("Each action clip entry must be [min, max]");
+            }
+        }
+    }
+
     int _action_dim;
     std::vector<int> _joint_ids;
 

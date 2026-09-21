@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FSM/State_RLBase.h"
+#include <atomic>
 
 class State_Mimic : public FSMState
 {
@@ -13,7 +14,7 @@ public:
     
     void exit()
     {
-        policy_thread_running = false;
+        policy_thread_running.store(false);
         if (policy_thread.joinable()) {
             policy_thread.join();
         }
@@ -23,11 +24,16 @@ public:
 
     static std::shared_ptr<MotionLoader_> motion; // for obs computation
 private:
+    void set_policy_fault(const std::string& reason);
+
     std::unique_ptr<isaaclab::ManagerBasedRLEnv> env;
     std::shared_ptr<MotionLoader_> motion_; // for saving
 
     std::thread policy_thread;
-    bool policy_thread_running = false;
+    std::atomic_bool policy_thread_running{false};
+    std::atomic_bool policy_fault_{false};
+    std::mutex policy_fault_mutex_;
+    std::string policy_fault_reason_;
     std::array<float, 2> time_range_;
 };
 
@@ -103,7 +109,7 @@ private:
     std::vector<Eigen::VectorXf> _comupte_raw_derivative(const std::vector<Eigen::VectorXf>& data)
     {
         std::vector<Eigen::VectorXf> derivative;
-        for(int i = 0; i < data.size() - 1; ++i) {
+        for(std::size_t i = 0; i + 1 < data.size(); ++i) {
             derivative.push_back((data[i + 1] - data[i]) / dt);
         }
         derivative.push_back(derivative.back());

@@ -9,8 +9,12 @@ std::shared_ptr<State_Mimic::MotionLoader_> State_Mimic::motion = nullptr;
 Eigen::Quaternionf torso_quat_w(isaaclab::ManagerBasedRLEnv* env) {
     using G1Type = unitree::BaseArticulation<LowState_t::SharedPtr>;
     G1Type* robot = dynamic_cast<G1Type*>(env->robot.get());
+    if (!robot) {
+        throw std::runtime_error("Mimic state requires a Unitree G1 articulation");
+    }
 
     auto root_quat = env->robot->data.root_quat_w;
+    std::lock_guard<std::mutex> lock(robot->lowstate->mutex_);
     auto & motors = robot->lowstate->msg_.motor_state();
 
     Eigen::Quaternionf torso_quat = root_quat \
@@ -143,19 +147,18 @@ State_Mimic::State_Mimic(int state_mode, std::string state_string)
     );
     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
 
-    const auto & joy = FSMState::lowstate->joystick;
     this->registered_checks.emplace_back(
         std::make_pair(
-            [&]()->bool{ return (env->episode_length * env->step_dt) > time_range_[1]; }, // time out
-            FSMStringMap.right.at("Velocity")
+            [&]()->bool{ return (env->episode_length.load() * env->step_dt) > time_range_[1]; }, // time out
+            FSMStringMap.right.at("BlindWalk")
         )
     );
-    this->registered_checks.emplace_back(
-        std::make_pair(
-            [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); }, // bad orientation
-            FSMStringMap.right.at("Passive")
-        )
-    );
+    register_safety_check(
+        [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); },
+        FSMStringMap.right.at("Passive"));
+    register_safety_check(
+        [&]()->bool{ return policy_fault_.load(); },
+        FSMStringMap.right.at("Passive"));
 }
 
 void State_Mimic::enter()
@@ -170,11 +173,16 @@ void State_Mimic::enter()
     }
 
     motion = motion_; // set for specific motion
+    {
+        std::lock_guard<std::mutex> lock(policy_fault_mutex_);
+        policy_fault_reason_.clear();
+    }
+    policy_fault_.store(false);
     env->reset();
     // Start policy thread
-    policy_thread_running = true;
+    policy_thread_running.store(true);
     policy_thread = std::thread([this]{
-        using clock = std::chrono::high_resolution_clock;
+        using clock = std::chrono::steady_clock;
         const std::chrono::duration<double> desiredDuration(env->step_dt);
         const auto dt = std::chrono::duration_cast<clock::duration>(desiredDuration);
 
@@ -188,24 +196,44 @@ void State_Mimic::enter()
         motion->reset(env->robot->data, time_range_[0]);
         env->reset();
 
-        while (policy_thread_running)
-        {
-            env->robot->update();
-            motion->update(env->episode_length * env->step_dt + time_range_[0]);
-            env->step();
+        try {
+            while (policy_thread_running.load())
+            {
+                motion->update(env->episode_length.load() * env->step_dt + time_range_[0]);
+                env->step();
 
-            // Sleep
-            std::this_thread::sleep_until(sleepTill);
-            sleepTill += dt;
+                std::this_thread::sleep_until(sleepTill);
+                sleepTill += dt;
+                if (sleepTill < clock::now()) {
+                    sleepTill = clock::now() + dt;
+                }
+            }
+        } catch (const std::exception& error) {
+            set_policy_fault(error.what());
         }
+        policy_thread_running.store(false);
     });
 }
 
 
 void State_Mimic::run()
 {
+    if (policy_fault_.load()) {
+        return;
+    }
     auto action = env->action_manager->processed_actions();
     for(int i(0); i < env->robot->data.joint_ids_map.size(); i++) {
         lowcmd->msg_.motor_cmd()[env->robot->data.joint_ids_map[i]].q() = action[i];
+    }
+}
+
+void State_Mimic::set_policy_fault(const std::string& reason)
+{
+    {
+        std::lock_guard<std::mutex> lock(policy_fault_mutex_);
+        policy_fault_reason_ = reason;
+    }
+    if (!policy_fault_.exchange(true)) {
+        spdlog::error("{} policy fault: {}", getStateString(), reason);
     }
 }

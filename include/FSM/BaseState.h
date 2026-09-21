@@ -20,7 +20,15 @@ public:
 
     virtual void enter() {}
 
-    virtual void pre_run() {}
+    virtual ~BaseState() = default;
+
+    virtual bool can_enter(std::string& reason)
+    {
+        (void)reason;
+        return true;
+    }
+
+    virtual bool pre_run() { return true; }
     virtual void run() {}
     virtual void post_run() {}
 
@@ -29,6 +37,10 @@ public:
     std::string getStateString() { return FSMStringMap.left.at(state_); }
     int getState() {return state_; }
     bool isState(int state) { return state_ == state; }
+    void register_safety_check(std::function<bool()> check, int target)
+    {
+        registered_checks.insert(registered_checks.begin(), {std::move(check), target});
+    }
     std::vector<std::pair<std::function<bool()>, int>> registered_checks;
 private:
     int state_;

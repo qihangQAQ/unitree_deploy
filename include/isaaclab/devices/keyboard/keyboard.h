@@ -1,164 +1,156 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <iostream>
+#include <mutex>
 #include <string>
-#include <vector>
-#include <deque>
 #include <termios.h>
-#include <unistd.h>
 #include <thread>
+#include <unistd.h>
 
-
-/**
- * @brief Maintain a keyboard reading thread.
- * And get the latest key value.
- */
+/** Maintain an optional, thread-safe keyboard input stream for local testing. */
 class Keyboard
 {
 public:
-  Keyboard()
-  {
-    tcgetattr( fileno( stdin ), &_oldSettings );
-    _newSettings = _oldSettings;
-    _oldSettings.c_lflag |= ( ICANON |  ECHO);
-    _newSettings.c_lflag &= (~ICANON & ~ECHO);
-
-    _startKey();
-
-    _thread_running  = true;
-    _readThread = std::thread([this] {
-      while (_running) {
-        _read();
-      }
-    });
-  }
-
-  ~Keyboard()
-  {
-    _thread_running = false;
-    _pauseKey();
-  }
-
-  void update()
-  {
-    if(_key != _last_key)
+    Keyboard()
     {
-      on_pressed = _key != "";
-      on_released = _key == "";
-    }
-    else
-    {
-      on_pressed = false;
-      on_released = false;
-    }
-    
-    _last_key = _key;
-  }
-
-  /**
-   * @brief Get the current key value
-   * 
-   * @return std::string 
-   */
-  std::string key() const { return _key; };
-
-  /**
-   * @brief Get the String object from keyboard 
-   * 
-   * @param slogan Used to prompt the user for input
-   * @return std::string 
-   */
-  std::string getString(std::string slogan)
-  {
-    // Stop reading keyboard value
-    _running = false;
-    _pauseKey();
-
-    std::string stringtemp;
-    std::cout << slogan << std::endl;// prompt
-    std::getline(std::cin, stringtemp);
-
-    // Restart reading keyboard value
-    _startKey();
-    _running = true;
-
-    return stringtemp;
-  }
-
-  /**
-   * flags; available after update()
-   */
-  bool on_pressed = false;
-  bool on_released = false;
-
-  private:
-  bool _thread_running = false;
-  bool _running = false;
-  std::thread _readThread;
-
-  void _read()
-  {
-    if(_running)
-    {
-      FD_ZERO(&_fd_set);
-      FD_SET( fileno(stdin), &_fd_set);
-
-      _tv.tv_sec = 0;
-      _tv.tv_usec = 80000;
-
-      if(select(fileno(stdin)+1, &_fd_set, NULL, NULL, &_tv))
-      {
-        // Read the key value into _c
-        int res = read( fileno(stdin), &_c, 1 );
-
-        // Parser the key value
-        if(_c != '\033') {
-          // This is a normal key
-          _key = _c;
-        }else{
-          // This is a special key
-          int m = read(fileno(stdin), &_c, 1);
-          if(_c == '[')
-          {
-            m = read(fileno(stdin), &_c, 1);
-            switch (_c)
-            {
-            case 'A': _key = "up";    break;
-            case 'B': _key = "down";  break;
-            case 'C': _key = "right"; break;
-            case 'D': _key = "left";  break;
-            default:  _key = "";      break;
-            }
-          }
+        terminal_available_ = ::isatty(fileno(stdin)) &&
+                              tcgetattr(fileno(stdin), &old_settings_) == 0;
+        if (!terminal_available_) {
+            return;
         }
-      }else{
-        _key = "";
-      }
-      // std::cout << "key: "<< key() << std::endl;
+
+        new_settings_ = old_settings_;
+        new_settings_.c_lflag &= (~ICANON & ~ECHO);
+        start_key();
+        thread_running_.store(true);
+        read_thread_ = std::thread([this] {
+            while (thread_running_.load()) {
+                if (reading_enabled_.load()) {
+                    read_once();
+                } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+            }
+        });
     }
-  }
 
-  /**
-   * @brief Restore keyboard default settings.
-   */
-  void _pauseKey()
-  {
-    tcsetattr( fileno( stdin ), TCSANOW, &_oldSettings );
-    _running = false;
-  }
+    ~Keyboard()
+    {
+        thread_running_.store(false);
+        reading_enabled_.store(false);
+        if (read_thread_.joinable()) {
+            read_thread_.join();
+        }
+        pause_key();
+    }
 
-  /**
-   * @brief Disable canonical mode and echoing of input characters.
-   */
-  void _startKey()
-  {
-    tcsetattr( fileno( stdin ), TCSANOW, &_newSettings );
-    _running = true;
-  }
+    void update()
+    {
+        std::lock_guard<std::mutex> lock(key_mutex_);
+        if (key_ != last_key_) {
+            on_pressed = !key_.empty();
+            on_released = key_.empty();
+        } else {
+            on_pressed = false;
+            on_released = false;
+        }
+        last_key_ = key_;
+    }
 
-  fd_set _fd_set;
-  char _c = '\0';
-  std::string _key, _last_key;
-  
-  termios _oldSettings, _newSettings;
-  timeval _tv;
+    std::string key() const
+    {
+        std::lock_guard<std::mutex> lock(key_mutex_);
+        return key_;
+    }
+
+    std::string getString(const std::string& slogan)
+    {
+        reading_enabled_.store(false);
+        pause_key();
+        std::cout << slogan << std::endl;
+        std::string value;
+        std::getline(std::cin, value);
+        start_key();
+        return value;
+    }
+
+    bool on_pressed = false;
+    bool on_released = false;
+
+private:
+    void set_key(std::string value)
+    {
+        std::lock_guard<std::mutex> lock(key_mutex_);
+        key_ = std::move(value);
+    }
+
+    void read_once()
+    {
+        char input = '\0';
+        if (!read_char(input)) {
+            set_key("");
+            return;
+        }
+        if (input != '\033') {
+            set_key(std::string(1, input));
+            return;
+        }
+
+        char bracket = '\0';
+        char direction = '\0';
+        if (!read_char(bracket) || bracket != '[' || !read_char(direction)) {
+            set_key("");
+            return;
+        }
+        switch (direction) {
+        case 'A': set_key("up"); break;
+        case 'B': set_key("down"); break;
+        case 'C': set_key("right"); break;
+        case 'D': set_key("left"); break;
+        default: set_key(""); break;
+        }
+    }
+
+    bool read_char(char& value)
+    {
+        fd_set descriptors;
+        FD_ZERO(&descriptors);
+        FD_SET(fileno(stdin), &descriptors);
+        timeval timeout{0, 80000};
+
+        const int selected = select(fileno(stdin) + 1, &descriptors, nullptr, nullptr, &timeout);
+        if (selected <= 0) {
+            return false;
+        }
+        return ::read(fileno(stdin), &value, 1) == 1;
+    }
+
+    void pause_key()
+    {
+        reading_enabled_.store(false);
+        if (terminal_available_) {
+            tcsetattr(fileno(stdin), TCSANOW, &old_settings_);
+        }
+    }
+
+    void start_key()
+    {
+        if (terminal_available_) {
+            tcsetattr(fileno(stdin), TCSANOW, &new_settings_);
+            reading_enabled_.store(true);
+        }
+    }
+
+    bool terminal_available_ = false;
+    std::atomic_bool thread_running_{false};
+    std::atomic_bool reading_enabled_{false};
+    std::thread read_thread_;
+    mutable std::mutex key_mutex_;
+    std::string key_;
+    std::string last_key_;
+    termios old_settings_{};
+    termios new_settings_{};
 };

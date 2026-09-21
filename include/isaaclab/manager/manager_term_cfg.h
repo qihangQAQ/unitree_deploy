@@ -3,10 +3,13 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <deque>
 #include <vector>
 #include <functional>
 #include <numeric>
+#include <stdexcept>
 
 namespace isaaclab
 {
@@ -26,12 +29,30 @@ struct ObservationTermCfg
 
     void reset(std::vector<float> obs)
     {
+        buff_.clear();
         for(int i(0); i < history_length; ++i) add(obs);
     }
 
     void add(std::vector<float> obs)
     {
-        for(int j = 0; j < obs.size(); ++j)
+        if (!scale.empty() && scale.size() != obs.size()) {
+            throw std::runtime_error(
+                "Observation scale length " + std::to_string(scale.size()) +
+                " does not match observation length " + std::to_string(obs.size()));
+        }
+        if (!clip.empty() && clip.size() != 2) {
+            throw std::runtime_error("Observation clip must contain exactly two values");
+        }
+        if (!std::all_of(scale.begin(), scale.end(),
+                         [](float value) { return std::isfinite(value); }) ||
+            !std::all_of(clip.begin(), clip.end(),
+                         [](float value) { return std::isfinite(value); })) {
+            throw std::runtime_error("Observation scale or clip contains NaN or Inf");
+        }
+        if (!clip.empty() && clip[0] > clip[1]) {
+            throw std::runtime_error("Observation clip minimum exceeds maximum");
+        }
+        for(std::size_t j = 0; j < obs.size(); ++j)
         {
             if(scale_first) {
                 if(!scale.empty()) obs[j] *= scale[j];
@@ -47,7 +68,7 @@ struct ObservationTermCfg
         }
         buff_.push_back(obs);
 
-        if (buff_.size() > history_length) buff_.pop_front();
+        if (buff_.size() > static_cast<std::size_t>(history_length)) buff_.pop_front();
     }
 
     const std::vector<float> & get(int n) const { return buff_[n]; }
@@ -61,7 +82,7 @@ struct ObservationTermCfg
         return concatenated;
     }
 
-    const std::size_t size() const { return std::accumulate(buff_.begin(), buff_.end(), 0,
+    std::size_t size() const { return std::accumulate(buff_.begin(), buff_.end(), std::size_t{0},
         [](std::size_t sum, const auto& v) { return sum + v.size(); }); }
 
 private:

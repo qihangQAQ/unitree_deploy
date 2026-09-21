@@ -44,8 +44,8 @@ public:
             }
         }
 
-        // register for all states
-        registered_checks.emplace_back(
+        // Safety checks have priority over user-requested transitions.
+        registered_checks.insert(registered_checks.begin(),
             std::make_pair(
                 []()->bool{ return lowstate->isTimeout(); },
                 FSMStringMap.right.at("Passive")
@@ -53,10 +53,11 @@ public:
         );
     }
 
-    void pre_run()
+    bool pre_run() override
     {
         lowstate->update();
         if(keyboard) keyboard->update();
+        return lowcmd->trylock();
     }
 
     void post_run()

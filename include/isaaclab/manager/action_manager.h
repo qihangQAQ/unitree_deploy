@@ -5,7 +5,10 @@
 
 #include "isaaclab/envs/manager_based_rl_env.h"
 #include "isaaclab/manager/manager_term_cfg.h"
+#include <cmath>
+#include <mutex>
 #include <numeric>
+#include <stdexcept>
 
 namespace isaaclab
 {
@@ -14,6 +17,7 @@ class ActionTerm
 {
 public:
     ActionTerm(YAML::Node cfg, ManagerBasedRLEnv* env): cfg(cfg), env(env) {}
+    virtual ~ActionTerm() = default;
 
     virtual int action_dim() = 0;
     virtual std::vector<float> raw_actions() = 0;
@@ -52,6 +56,7 @@ public:
 
     void reset()
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         _action.assign(total_action_dim(), 0.0f);
         for(auto & term : _terms)
         {
@@ -61,11 +66,13 @@ public:
 
     std::vector<float> action()
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         return _action;
     }
 
     std::vector<float> processed_actions()
     {
+        std::lock_guard<std::mutex> lock(mutex_);
         std::vector<float> actions;
         for(auto & term : _terms)
         {
@@ -77,6 +84,18 @@ public:
 
     void process_action(std::vector<float> action)
     {
+        if (action.size() != static_cast<std::size_t>(total_action_dim())) {
+            throw std::runtime_error(
+                "Action length " + std::to_string(action.size()) +
+                " does not match configured action dimension " +
+                std::to_string(total_action_dim()));
+        }
+        for (float value : action) {
+            if (!std::isfinite(value)) {
+                throw std::runtime_error("Policy returned a non-finite action");
+            }
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
         _action = action;
         int idx = 0;
         for(auto & term : _terms)
@@ -125,6 +144,7 @@ private:
 
     std::vector<float> _action;
     std::vector<std::unique_ptr<ActionTerm>> _terms;
+    mutable std::mutex mutex_;
 };
 
 };
