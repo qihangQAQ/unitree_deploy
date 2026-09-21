@@ -196,10 +196,8 @@ bool Ros2DepthSource::start()
             impl_->cfg.image_topic, impl_->cfg.camera_info_topic);
         return true;
     } catch (const std::exception& error) {
-        const std::string failure = std::string("ROS2 startup failed: ") + error.what();
         impl_->running.store(false);
-        stop();
-        set_status(failure);
+        set_status(std::string("ROS2 startup failed: ") + error.what());
         spdlog::error("Ros2DepthSource: {}", status());
         return false;
     }
@@ -211,8 +209,7 @@ void Ros2DepthSource::stop()
         return;
     }
     const bool was_running = impl_->running.exchange(false);
-    if (!was_running && !impl_->thread.joinable() && !impl_->context &&
-        !impl_->node && !impl_->executor) {
+    if (!was_running && !impl_->thread.joinable()) {
         return;
     }
     if (impl_->executor) {
