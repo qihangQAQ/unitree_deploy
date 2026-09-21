@@ -3,7 +3,11 @@
 #include "isaaclab/envs/mdp/observations/observations.h"
 #include "isaaclab/envs/mdp/actions/joint_actions.h"
 #include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <stdexcept>
 #include <unordered_map>
+#include <vector>
 
 namespace isaaclab
 {
@@ -37,13 +41,48 @@ State_RLBase::State_RLBase(int state_mode, std::string state_string)
 : FSMState(state_mode, state_string) 
 {
     auto cfg = param::config["FSM"][state_string];
-    auto policy_dir = param::parser_policy_dir(cfg["policy_dir"].as<std::string>());
+    if (!cfg || !cfg["model_path"].IsScalar() ||
+        !cfg["deploy_path"].IsScalar()) {
+        throw std::runtime_error("BlindWalk requires model_path and deploy_path");
+    }
+    std::filesystem::path model_path = cfg["model_path"].as<std::string>();
+    std::filesystem::path deploy_path = cfg["deploy_path"].as<std::string>();
+    if (model_path.is_relative()) model_path = param::proj_dir / model_path;
+    if (deploy_path.is_relative()) deploy_path = param::proj_dir / deploy_path;
+    if (!std::filesystem::is_regular_file(model_path) ||
+        !std::filesystem::is_regular_file(deploy_path)) {
+        throw std::runtime_error(
+            "BlindWalk model or deploy config is missing: model=" +
+            model_path.string() + ", deploy=" + deploy_path.string());
+    }
+
+    auto runner = std::make_unique<isaaclab::OrtRunner>(model_path);
+    const auto* obs_input = runner->find_input("obs");
+    if (runner->inputs().size() != 1 || !obs_input ||
+        obs_input->shape != std::vector<std::int64_t>{1, 480} ||
+        obs_input->element_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+        runner->output().name != "actions" ||
+        runner->output().shape != std::vector<std::int64_t>{1, 29}) {
+        throw std::runtime_error(
+            "BlindWalk requires ONNX contract obs[1,480] -> actions[1,29]");
+    }
 
     env = std::make_unique<isaaclab::ManagerBasedRLEnv>(
-        YAML::LoadFile(policy_dir / "params" / "deploy.yaml"),
+        YAML::LoadFile(deploy_path.string()),
         std::make_shared<unitree::BaseArticulation<LowState_t::SharedPtr>>(FSMState::lowstate)
     );
-    env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
+    const auto observations = env->observation_manager->compute();
+    const auto obs = observations.find("obs");
+    if (observations.size() != 1 || obs == observations.end() ||
+        obs->second.size() != obs_input->element_count ||
+        env->action_manager->total_action_dim() != 29 ||
+        env->robot->data.joint_ids_map.size() != 29) {
+        throw std::runtime_error(
+            "BlindWalk deploy.yaml must provide obs[480] and 29 joint actions");
+    }
+    env->alg = std::move(runner);
+    spdlog::info("BlindWalk model={} deploy={}",
+                 model_path.string(), deploy_path.string());
 
     max_policy_step_ms_ = cfg["max_policy_step_ms"].as<int>(40);
     max_target_delta_per_cycle_ = cfg["max_target_delta_per_cycle"].as<float>(0.02f);

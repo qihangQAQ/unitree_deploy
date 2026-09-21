@@ -6,7 +6,6 @@ DEPLOY_ROS_DISTRO="${UNITREE_DEPLOY_ROS_DISTRO:-humble}"
 DEPLOY_ROS_SETUP="/opt/ros/${DEPLOY_ROS_DISTRO}/setup.bash"
 DEPLOY_DEPTH_TOPIC="${UNITREE_DEPTH_TOPIC:-/camera/depth/image_rect_raw}"
 DEPLOY_CAMERA_INFO_TOPIC="${UNITREE_DEPTH_CAMERA_INFO_TOPIC:-/camera/depth/camera_info}"
-DEPLOY_DEPTH_POLICY_DIR="${DEPLOY_ROOT}/robots/g1_29dof/config/policy/depth/v0"
 
 if [[ ! -f "${DEPLOY_ROS_SETUP}" ]]; then
   echo "ROS2 setup not found: ${DEPLOY_ROS_SETUP}" >&2
@@ -25,11 +24,6 @@ fi
 if ! ros2 topic list | grep -Fxq "${DEPLOY_CAMERA_INFO_TOPIC}"; then
   echo "Depth CameraInfo topic is not available yet: ${DEPLOY_CAMERA_INFO_TOPIC}" >&2
   exit 1
-fi
-
-if [[ ! -f "${DEPLOY_DEPTH_POLICY_DIR}/exported/policy.onnx" ||
-      ! -f "${DEPLOY_DEPTH_POLICY_DIR}/params/deploy.yaml" ]]; then
-  echo "Depth policy artifacts are not installed; DepthWalk will remain disabled." >&2
 fi
 
 exec "${DEPLOY_ROOT}/run_real.sh" "$@"

@@ -136,21 +136,21 @@ void State_RLDepth::create_depth_source(const YAML::Node& cfg)
 
 void State_RLDepth::load_policy_if_available(const YAML::Node& cfg)
 {
-    if (!cfg || !cfg["policy_dir"]) {
-        unavailable_reason_ = "DepthWalk policy_dir is not configured";
+    if (!cfg || !cfg["model_path"].IsScalar() ||
+        !cfg["deploy_path"].IsScalar()) {
+        unavailable_reason_ = "DepthWalk model_path or deploy_path is not configured";
         return;
     }
 
-    std::filesystem::path policy_dir = cfg["policy_dir"].as<std::string>();
-    if (policy_dir.is_relative()) {
-        policy_dir = param::proj_dir / policy_dir;
-    }
-    const auto deploy_path = policy_dir / "params" / "deploy.yaml";
-    const auto model_path = policy_dir / "exported" / "policy.onnx";
+    std::filesystem::path model_path = cfg["model_path"].as<std::string>();
+    std::filesystem::path deploy_path = cfg["deploy_path"].as<std::string>();
+    if (model_path.is_relative()) model_path = param::proj_dir / model_path;
+    if (deploy_path.is_relative()) deploy_path = param::proj_dir / deploy_path;
     if (!std::filesystem::is_regular_file(deploy_path) ||
         !std::filesystem::is_regular_file(model_path)) {
         unavailable_reason_ =
-            "missing depth policy artifacts under " + policy_dir.string();
+            "missing depth policy artifacts: model=" + model_path.string() +
+            ", deploy=" + deploy_path.string();
         spdlog::warn("DepthWalk disabled: {}", unavailable_reason_);
         return;
     }
@@ -167,6 +167,8 @@ void State_RLDepth::load_policy_if_available(const YAML::Node& cfg)
         if (runner->inputs().size() != 2 || !policy_input || !depth_input ||
             !shape_equals(policy_input->shape, {1, 480}) ||
             !shape_equals(depth_input->shape, {1, 16, 24, 1}) ||
+            policy_input->element_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
+            depth_input->element_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT ||
             runner->output().name != "actions" ||
             !shape_equals(runner->output().shape, {1, 29})) {
             throw std::runtime_error(
@@ -175,6 +177,16 @@ void State_RLDepth::load_policy_if_available(const YAML::Node& cfg)
         if (env->action_manager->total_action_dim() != 29 ||
             env->robot->data.joint_ids_map.size() != 29) {
             throw std::runtime_error("depth deploy.yaml must define 29 actions and 29 joint ids");
+        }
+        const auto observations = env->observation_manager->compute();
+        const auto policy_obs = observations.find("policy");
+        const auto depth_obs = observations.find("depth");
+        if (observations.size() != 2 || policy_obs == observations.end() ||
+            depth_obs == observations.end() ||
+            policy_obs->second.size() != policy_input->element_count ||
+            depth_obs->second.size() != depth_input->element_count) {
+            throw std::runtime_error(
+                "depth deploy.yaml must provide policy[480] and depth[384]");
         }
 
         max_policy_step_ms_ = yaml_or<int>(cfg, "max_policy_step_ms", 40);
@@ -185,7 +197,8 @@ void State_RLDepth::load_policy_if_available(const YAML::Node& cfg)
         env_ = std::move(env);
         policy_available_ = true;
         unavailable_reason_.clear();
-        spdlog::info("DepthWalk policy contract validated: {}", model_path.string());
+        spdlog::info("DepthWalk policy contract validated: model={} deploy={}",
+                     model_path.string(), deploy_path.string());
     } catch (const std::exception& error) {
         unavailable_reason_ = std::string("invalid depth policy: ") + error.what();
         spdlog::error("DepthWalk disabled: {}", unavailable_reason_);

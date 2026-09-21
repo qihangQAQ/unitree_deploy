@@ -64,6 +64,7 @@ FSM:
         0, -0.25,0,0.97,-0.15, 0,0
       ]
     ]
+# 选择不同模式的按键、策略（ONNX）、参数（YAML）等
   BlindWalk:
     transitions: 
       Passive: LT + B.on_pressed
@@ -71,16 +72,17 @@ FSM:
       Mimic_Dance_102: LT(2s) + down.on_pressed
       Mimic_Gangnam_Style: LT(2s) + left.on_pressed
 
-    policy_dir: config/policy/velocity
+    model_path: config/policy/velocity/exported/policy.onnx
+    deploy_path: config/policy/velocity/params/deploy.yaml
     max_policy_step_ms: 40
     max_target_delta_per_cycle: 0.02
   DepthWalk:
     transitions:
       Passive: LT + B.on_pressed
       FixStand: LB + Y.on_pressed
-    policy_dir: config/policy/depth/v0
+    model_path: config/policy/velocity-depth/exported/policy.onnx
+    deploy_path: config/policy/velocity-depth/params/deploy.yaml
     max_policy_step_ms: 40
-    # policy_dir: ../../../logs/rsl_rl/unitree_g1_29dof_velocity
   Mimic_Dance_102:
     transitions: 
       Passive: LT + B.on_pressed

@@ -416,15 +416,15 @@ depth
 [N, 16, 24, 1]
 ```
 
-当前逻辑可能只生成 16 个 scale，但 C++ 展平后会访问 384 个 scale，存在越界风险。
+当前逻辑会只生成 16 个 scale，而 C++ 部署观测展平后是 384 个值。部署端会拒绝这个长度不匹配的配置。
 
-应将维度计算修改为：
+部署端使用固定的 `velocity-depth/params/deploy.yaml`，其中 `depths` 的 `scale: null` 表示单位缩放，`params: {}` 表示深度图由部署端相机预处理提供。若以后修复训练侧自动导出，深度项的维度应按下式计算：
 
 ```text
 term_dim = 16 × 24 × 1 = 384
 ```
 
-并确保最终导出的 depth scale 包含 384 个值。
+若导出显式 scale，应包含 384 个值。
 
 这个修改位于当前训练项目：
 
@@ -432,16 +432,9 @@ term_dim = 16 × 24 × 1 = 384
 /home/qihang/code/unitree_perception_lab/source/unitree_rl_lab/unitree_rl_lab/utils/export_deploy_cfg.py
 ```
 
-它不属于 `unitree_deploy`，但必须在重新导出深度策略的 `deploy.yaml` 前完成。
+后续可将新 ONNX 以独立文件名放入 `velocity-depth/exported/`，再修改 `config.yaml` 中 `FSM.DepthWalk.model_path`。只要输入输出接口、观测顺序与含义、动作定义和深度预处理约定不变，`FSM.DepthWalk.deploy_path` 就继续指向固定的 `velocity-depth/params/deploy.yaml`。网络内部结构可以变化；上述约定变化时需要建立新的 YAML 并更新 `deploy_path`。
 
-部署时需要保证以下两个文件来自同一次导出：
-
-```text
-policy.onnx
-deploy.yaml
-```
-
-不能混用不同训练运行产生的文件。
+盲走同样通过 `FSM.BlindWalk.model_path` 和 `FSM.BlindWalk.deploy_path` 分别选择 `velocity/exported/` 中的模型和 `velocity/params/` 中的 YAML。相对路径以 `robots/g1_29dof` 为基准；控制程序启动时检查选中模型的接口和部署观测维度。
 
 ---
 
@@ -496,13 +489,17 @@ DepthWalk
 ```text
 robots/g1_29dof/config/policy/
 ├── velocity/
-│   └── v0/
-│       ├── exported/policy.onnx
-│       └── params/deploy.yaml
-└── depth/
-    └── v0/
-        ├── exported/policy.onnx
-        └── params/deploy.yaml
+│   ├── exported/
+│   │   ├── policy.onnx
+│   │   └── policy_v2.onnx
+│   └── params/
+│       ├── deploy.yaml
+│       └── deploy_v2.yaml
+└── velocity-depth/
+    ├── exported/
+    │   ├── policy.onnx
+    │   └── depth_v2.onnx
+    └── params/deploy.yaml
 ```
 
 ---
@@ -948,7 +945,7 @@ robots/g1_29dof/src/State_RLBase.cpp
 
 ```text
 先补安全保护
-→ 修复训练侧deploy.yaml导出
+→ 固定并校验深度deploy.yaml
 → 校验ONNX接口
 → 实现DepthSource抽象
 → 完成离线深度预处理和推理测试

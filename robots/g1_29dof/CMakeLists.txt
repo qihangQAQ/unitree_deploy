@@ -96,7 +96,7 @@ if(UNITREE_DEPLOY_BUILD_TESTS)
   add_executable(ort_runner_test tests/ort_runner_test.cpp)
   target_link_libraries(ort_runner_test PRIVATE ${PROJECT_NAME}_lib)
   target_compile_definitions(ort_runner_test PRIVATE
-    TEST_POLICY_PATH="${PROJECT_SOURCE_DIR}/config/policy/velocity/v0/exported/policy.onnx"
-    TEST_DEPLOY_PATH="${PROJECT_SOURCE_DIR}/config/policy/velocity/v0/params/deploy.yaml")
+    TEST_PROJECT_DIR="${PROJECT_SOURCE_DIR}"
+    TEST_CONFIG_PATH="${PROJECT_SOURCE_DIR}/config/config.yaml")
   add_test(NAME ort_runner_test COMMAND ort_runner_test)
 endif()

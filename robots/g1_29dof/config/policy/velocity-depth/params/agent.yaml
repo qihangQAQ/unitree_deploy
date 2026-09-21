@@ -1,0 +1,89 @@
+seed: 47
+device: cuda:5
+num_steps_per_env: 24
+max_iterations: 20000
+empirical_normalization: false
+obs_groups:
+  policy:
+  - policy
+  - depth
+  critic:
+  - critic
+clip_actions: 18.0
+save_interval: 500
+experiment_name: Unitree-Velocity-depth-pro
+run_name: depth-terrain1-G1CFG-resume
+logger: tensorboard
+neptune_project: isaaclab
+wandb_project: isaaclab
+resume: true
+load_run: 2026-09-01_01-52-42_depth-terrain1-new2
+load_checkpoint: model_3500.pt
+class_name: unitree_rl_lab.rsl_rl_ext.runners.him_moe_runner:HimMoeRunner
+policy:
+  class_name: HimMoeActorCritic
+  init_noise_std: 1.0
+  noise_std_type: scalar
+  actor_obs_normalization: false
+  critic_obs_normalization: false
+  actor_hidden_dims:
+  - 256
+  - 128
+  - 64
+  critic_hidden_dims:
+  - 256
+  - 256
+  - 128
+  activation: elu
+  proprio_group: policy
+  exteroception_group: depth
+  auxiliary_group: auxiliary
+  history_length: 5
+  proprio_dim: 96
+  auxiliary_dim: 96
+  estimator_hidden_dims:
+  - 256
+  - 64
+  - 16
+  target_hidden_dims:
+  - 256
+  - 64
+  num_prototypes: 32
+  him_temperature: 3.0
+  sinkhorn_epsilon: 0.05
+  sinkhorn_iterations: 3
+  exteroception_shape: !!python/tuple
+  - 16
+  - 24
+  exteroception_input_mode: image
+  exteroception_model_dim: 32
+  exteroception_latent_dim: 32
+  exteroception_first_conv_channels: 8
+  exteroception_first_conv_stride: 2
+  attention_num_heads: 4
+  attention_batch_size: 4096
+  num_moe_experts: 4
+  moe_gate_hidden_dims: []
+algorithm:
+  class_name: HimMoePPO
+  num_learning_epochs: 5
+  num_mini_batches: 4
+  learning_rate: 0.001
+  schedule: adaptive
+  gamma: 0.99
+  lam: 0.95
+  entropy_coef: 0.01
+  desired_kl: 0.01
+  max_grad_norm: 1.0
+  value_loss_coef: 1.0
+  use_clipped_value_loss: true
+  clip_param: 0.2
+  normalize_advantage_per_mini_batch: false
+  rnd_cfg: null
+  symmetry_cfg: null
+  velocity_loss_coef: 1.0
+  him_swap_loss_coef: 1.0
+  estimator_learning_rate: 0.001
+  estimator_max_grad_norm: 10.0
+  auxiliary_group: auxiliary
+  auxiliary_dim: 96
