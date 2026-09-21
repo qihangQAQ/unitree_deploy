@@ -5,18 +5,12 @@ DEPLOY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEPLOY_BUILD_DIR="${DEPLOY_BUILD_DIR:-${DEPLOY_ROOT}/robots/g1_29dof/build}"
 DEPLOY_WITH_ROS2="${UNITREE_DEPLOY_WITH_ROS2:-ON}"
 DEPLOY_BUILD_TYPE="${UNITREE_DEPLOY_BUILD_TYPE:-Release}"
-DEPLOY_ROS_DISTRO="${UNITREE_DEPLOY_ROS_DISTRO:-humble}"
+DEPLOY_BUILD_TESTS="${UNITREE_DEPLOY_BUILD_TESTS:-ON}"
 
 if [[ "${DEPLOY_WITH_ROS2}" == "ON" ]]; then
-  DEPLOY_ROS_SETUP="/opt/ros/${DEPLOY_ROS_DISTRO}/setup.bash"
-  if [[ ! -f "${DEPLOY_ROS_SETUP}" ]]; then
-    echo "ROS2 setup not found: ${DEPLOY_ROS_SETUP}" >&2
-    exit 1
-  fi
-  set +u
-  # shellcheck disable=SC1090
-  source "${DEPLOY_ROS_SETUP}"
-  set -u
+  # shellcheck source=scripts/ros_env.sh
+  source "${DEPLOY_ROOT}/scripts/ros_env.sh"
+  deploy_source_ros
 fi
 
 DEPLOY_CMAKE_ARGS=(
@@ -24,7 +18,7 @@ DEPLOY_CMAKE_ARGS=(
   -B "${DEPLOY_BUILD_DIR}"
   -DCMAKE_BUILD_TYPE="${DEPLOY_BUILD_TYPE}"
   -DUNITREE_DEPLOY_WITH_ROS2="${DEPLOY_WITH_ROS2}"
-  -DUNITREE_DEPLOY_BUILD_TESTS=ON
+  -DUNITREE_DEPLOY_BUILD_TESTS="${DEPLOY_BUILD_TESTS}"
 )
 
 # Prefer the system compiler used by ROS2 unless the caller explicitly selected one.
@@ -37,4 +31,6 @@ fi
 
 cmake "${DEPLOY_CMAKE_ARGS[@]}"
 cmake --build "${DEPLOY_BUILD_DIR}" --parallel "${UNITREE_DEPLOY_JOBS:-2}"
-ctest --test-dir "${DEPLOY_BUILD_DIR}" --output-on-failure
+if [[ "${DEPLOY_BUILD_TESTS}" == "ON" ]]; then
+  ctest --test-dir "${DEPLOY_BUILD_DIR}" --output-on-failure
+fi

@@ -4,23 +4,31 @@ project(g1_29dof_controller LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib")
 
 option(UNITREE_DEPLOY_WITH_ROS2 "Build the ROS2 RealSense depth source" OFF)
 option(UNITREE_DEPLOY_BUILD_TESTS "Build deployment unit tests" ON)
 set(ONNXRUNTIME_ROOT "" CACHE PATH "Path to an ONNX Runtime installation")
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/ros2_enabled"
+  CONTENT "${UNITREE_DEPLOY_WITH_ROS2}\n")
 
 find_package(Boost REQUIRED COMPONENTS program_options)
 find_package(yaml-cpp REQUIRED)
 find_package(Threads REQUIRED)
 
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+  set(ONNXRUNTIME_ARCH x64)
+  set(ONNXRUNTIME_ELF_MACHINE 3e00)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+  set(ONNXRUNTIME_ARCH aarch64)
+  set(ONNXRUNTIME_ELF_MACHINE b700)
+else()
+  message(FATAL_ERROR "Unsupported CPU architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
 if(NOT ONNXRUNTIME_ROOT)
-  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
-    set(ONNXRUNTIME_ROOT
-      "${PROJECT_SOURCE_DIR}/../../thirdparty/onnxruntime-linux-x64-1.22.0")
-  else()
-    message(FATAL_ERROR
-      "ONNXRUNTIME_ROOT must point to an ${CMAKE_SYSTEM_PROCESSOR} ONNX Runtime installation")
-  endif()
+  set(ONNXRUNTIME_ROOT
+    "${PROJECT_SOURCE_DIR}/../../thirdparty/onnxruntime-linux-${ONNXRUNTIME_ARCH}-1.22.0")
 endif()
 
 find_path(ONNXRUNTIME_INCLUDE_DIR
@@ -35,12 +43,22 @@ if(NOT ONNXRUNTIME_INCLUDE_DIR OR NOT ONNXRUNTIME_LIBRARY)
   message(FATAL_ERROR
     "Could not find ONNX Runtime under ONNXRUNTIME_ROOT='${ONNXRUNTIME_ROOT}'")
 endif()
+file(READ "${ONNXRUNTIME_LIBRARY}" ONNXRUNTIME_ELF_HEADER LIMIT 6 HEX)
+file(READ "${ONNXRUNTIME_LIBRARY}" ONNXRUNTIME_LIBRARY_MACHINE OFFSET 18 LIMIT 2 HEX)
+string(TOLOWER "${ONNXRUNTIME_ELF_HEADER}" ONNXRUNTIME_ELF_HEADER)
+string(TOLOWER "${ONNXRUNTIME_LIBRARY_MACHINE}" ONNXRUNTIME_LIBRARY_MACHINE)
+if(NOT ONNXRUNTIME_ELF_HEADER STREQUAL "7f454c460201" OR
+   NOT ONNXRUNTIME_LIBRARY_MACHINE STREQUAL ONNXRUNTIME_ELF_MACHINE)
+  message(FATAL_ERROR
+    "ONNX Runtime library '${ONNXRUNTIME_LIBRARY}' is not a Linux ${CMAKE_SYSTEM_PROCESSOR} ELF library")
+endif()
 message(STATUS "ONNX Runtime root: ${ONNXRUNTIME_ROOT}")
 
 file(GLOB_RECURSE G1_CONTROLLER_SOURCES CONFIGURE_DEPENDS
   "${PROJECT_SOURCE_DIR}/src/*.cpp")
 
 if(UNITREE_DEPLOY_WITH_ROS2)
+  find_package(ament_cmake REQUIRED)
   find_package(rclcpp REQUIRED)
   find_package(sensor_msgs REQUIRED)
 else()
@@ -58,23 +76,19 @@ target_include_directories(${PROJECT_NAME}_lib
     "${PROJECT_SOURCE_DIR}/../../include"
     "${ONNXRUNTIME_INCLUDE_DIR}")
 target_link_libraries(${PROJECT_NAME}_lib
-  PUBLIC
-    unitree_sdk2
-    ddsc
-    ddscxx
-    rt
-    Threads::Threads
-    Boost::program_options
-    yaml-cpp
-    fmt
-    "${ONNXRUNTIME_LIBRARY}")
+  unitree_sdk2
+  ddsc
+  ddscxx
+  rt
+  Threads::Threads
+  Boost::program_options
+  yaml-cpp
+  fmt
+  "${ONNXRUNTIME_LIBRARY}")
 
 if(UNITREE_DEPLOY_WITH_ROS2)
   target_compile_definitions(${PROJECT_NAME}_lib PUBLIC UNITREE_DEPLOY_WITH_ROS2=1)
-  target_link_libraries(${PROJECT_NAME}_lib
-    PUBLIC
-      rclcpp::rclcpp
-      sensor_msgs::sensor_msgs_library)
+  ament_target_dependencies(${PROJECT_NAME}_lib rclcpp sensor_msgs)
 endif()
 
 add_executable(g1_ctrl main.cpp)
@@ -100,3 +114,17 @@ if(UNITREE_DEPLOY_BUILD_TESTS)
     TEST_CONFIG_PATH="${PROJECT_SOURCE_DIR}/config/config.yaml")
   add_test(NAME ort_runner_test COMMAND ort_runner_test)
 endif()
+
+install(TARGETS g1_ctrl RUNTIME DESTINATION bin)
+if(UNITREE_DEPLOY_WITH_ROS2)
+  install(TARGETS depth_capture RUNTIME DESTINATION bin)
+  install(PROGRAMS "${PROJECT_SOURCE_DIR}/../../run_real_depth.sh" DESTINATION bin)
+endif()
+install(DIRECTORY "${PROJECT_SOURCE_DIR}/config/" DESTINATION config)
+install(DIRECTORY "${ONNXRUNTIME_ROOT}/lib/" DESTINATION lib
+  FILES_MATCHING PATTERN "*.so*")
+install(PROGRAMS "${PROJECT_SOURCE_DIR}/../../run_real.sh" DESTINATION bin)
+install(FILES
+  "${PROJECT_SOURCE_DIR}/../../scripts/ros_env.sh"
+  "${CMAKE_CURRENT_BINARY_DIR}/ros2_enabled"
+  DESTINATION bin)
