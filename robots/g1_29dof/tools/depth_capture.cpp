@@ -6,14 +6,19 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <ctime>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
+
+#include <unistd.h>
 
 namespace
 {
@@ -94,13 +99,13 @@ void atomic_write(const fs::path& destination, Writer&& writer)
     fs::rename(temporary, destination);
 }
 
-void save_processed(const fs::path& directory, const sensors::DepthFrame& frame,
+void save_processed(const fs::path& destination, const sensors::DepthFrame& frame,
                     const sensors::DepthPreprocessor& preprocessor,
                     const std::optional<sensors::DepthCameraInfo>& info)
 {
     const auto processed = preprocessor.process(frame);
     const auto& cfg = preprocessor.config();
-    atomic_write(directory / "latest_depth.csv", [&](std::ostream& out) {
+    atomic_write(destination, [&](std::ostream& out) {
         out << "# format=unitree_policy_depth_v1\n";
         write_frame_header(out, frame);
         out << "# size=" << processed.width << ',' << processed.height << '\n'
@@ -134,9 +139,9 @@ void save_processed(const fs::path& directory, const sensors::DepthFrame& frame,
     });
 }
 
-void save_raw(const fs::path& directory, const sensors::DepthFrame& frame)
+void save_raw(const fs::path& destination, const sensors::DepthFrame& frame)
 {
-    atomic_write(directory / "last_raw_depth_m.csv", [&](std::ostream& out) {
+    atomic_write(destination, [&](std::ostream& out) {
         out << "# format=unitree_raw_depth_m_v1\n";
         write_frame_header(out, frame);
         out << "# size=" << frame.width << ',' << frame.height << '\n';
@@ -144,8 +149,45 @@ void save_raw(const fs::path& directory, const sensors::DepthFrame& frame)
     });
 }
 
-int run(const fs::path& config_path, const fs::path& output_directory)
+std::string local_timestamp()
 {
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t seconds = std::chrono::system_clock::to_time_t(now);
+    std::tm local_time{};
+    if (!localtime_r(&seconds, &local_time)) {
+        throw std::runtime_error("Cannot read local time");
+    }
+    const auto milliseconds =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000;
+    std::ostringstream name;
+    name << std::put_time(&local_time, "%Y%m%d_%H%M%S")
+         << '_' << std::setw(3) << std::setfill('0') << milliseconds;
+    return name.str();
+}
+
+std::pair<fs::path, fs::path> final_paths(const fs::path& directory)
+{
+    const std::string timestamp = local_timestamp();
+    for (int suffix = 0; suffix < 1000; ++suffix) {
+        const std::string stem = timestamp + (suffix == 0 ? "" : "_" + std::to_string(suffix));
+        const auto processed = directory / (stem + "_depth-real.csv");
+        const auto raw = directory / (stem + "_depth-real-raw.csv");
+        if (!fs::exists(processed) && !fs::exists(raw)) {
+            return {processed, raw};
+        }
+    }
+    throw std::runtime_error("Cannot find an unused timestamped depth filename");
+}
+
+int run()
+{
+    // In either layout, build/ or bin/ sits beside config/ under one parent.
+    const fs::path robot_directory = fs::canonical("/proc/self/exe").parent_path().parent_path();
+    const fs::path config_path = robot_directory / "config" / "config.yaml";
+    const fs::path output_directory = robot_directory / "depth";
+    if (!fs::is_regular_file(config_path)) {
+        throw std::runtime_error("Depth config not found: " + config_path.string());
+    }
     const YAML::Node root = YAML::LoadFile(config_path.string());
     const YAML::Node depth_cfg = root["depth"];
     if (!depth_cfg) {
@@ -168,13 +210,12 @@ int run(const fs::path& config_path, const fs::path& output_directory)
     }
     const auto stale_timeout = std::chrono::milliseconds(stale_timeout_ms);
 
-    if (fs::exists(output_directory)) {
-        if (!fs::is_directory(output_directory) || !fs::is_empty(output_directory)) {
-            throw std::runtime_error("Output directory must be empty: " + output_directory.string());
-        }
-    } else {
-        fs::create_directories(output_directory);
+    if (fs::exists(output_directory) && !fs::is_directory(output_directory)) {
+        throw std::runtime_error("Depth output path is not a directory: " + output_directory.string());
     }
+    fs::create_directories(output_directory);
+    const fs::path staging_file = output_directory /
+        (".depth_capture_" + std::to_string(static_cast<long>(getpid())) + ".csv");
 
     // Keep this standalone tool usable when the default ~/.ros/log is not writable.
     if (const char* log_directory = std::getenv("ROS_LOG_DIR"); !log_directory || !*log_directory) {
@@ -193,7 +234,7 @@ int run(const fs::path& config_path, const fs::path& output_directory)
     std::signal(SIGTERM, on_signal);
 
     std::cout << "Capturing depth into " << output_directory << '\n'
-              << "latest_depth.csv is replaced after each received frame.\n"
+              << "The latest processed frame is updated on disk during capture.\n"
               << "Stop the camera node or press Ctrl+C here to finish.\n" << std::flush;
 
     std::uint64_t saved_sequence = 0;
@@ -203,7 +244,7 @@ int run(const fs::path& config_path, const fs::path& output_directory)
         while (!stop_requested) {
             const auto frame = source.wait_for_newer(saved_sequence, std::chrono::milliseconds(100));
             if (frame) {
-                save_processed(output_directory, *frame, preprocessor, source.camera_info());
+                save_processed(staging_file, *frame, preprocessor, source.camera_info());
                 saved_sequence = frame->sequence;
                 if (saved_sequence == 1 || saved_sequence % 60 == 0) {
                     std::cout << "Saved sequence " << saved_sequence << '\n' << std::flush;
@@ -227,13 +268,23 @@ int run(const fs::path& config_path, const fs::path& output_directory)
     if (final_frame) {
         if (!capture_error && final_frame->sequence != saved_sequence) {
             try {
-                save_processed(output_directory, *final_frame, preprocessor, source.camera_info());
+                save_processed(staging_file, *final_frame, preprocessor, source.camera_info());
+            } catch (...) {
+                capture_error = std::current_exception();
+            }
+        }
+        const auto [processed_file, raw_file] = final_paths(output_directory);
+        if (!capture_error) {
+            try {
+                fs::rename(staging_file, processed_file);
+                std::cout << "Final policy depth saved to " << processed_file << '\n';
             } catch (...) {
                 capture_error = std::current_exception();
             }
         }
         try {
-            save_raw(output_directory, *final_frame);
+            save_raw(raw_file, *final_frame);
+            std::cout << "Final raw depth saved to " << raw_file << '\n';
         } catch (...) {
             if (!capture_error) {
                 capture_error = std::current_exception();
@@ -246,21 +297,20 @@ int run(const fs::path& config_path, const fs::path& output_directory)
     if (capture_error) {
         std::rethrow_exception(capture_error);
     }
-    std::cout << "Final sequence " << final_frame->sequence << " saved to "
-              << output_directory << '\n';
+    std::cout << "Final sequence " << final_frame->sequence << " saved\n";
     return 0;
 }
 
 } // namespace
 
-int main(int argc, char** argv)
+int main(int argc, char**)
 {
-    if (argc != 3) {
-        std::cerr << "Usage: depth_capture <config.yaml> <new-or-empty-output-directory>\n";
+    if (argc != 1) {
+        std::cerr << "Usage: depth_capture\n";
         return 2;
     }
     try {
-        return run(argv[1], argv[2]);
+        return run();
     } catch (const std::exception& error) {
         std::cerr << "depth_capture: " << error.what() << '\n';
         return 1;
