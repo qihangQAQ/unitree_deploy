@@ -6,11 +6,13 @@
 #include <sensor_msgs/msg/image.hpp>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
 #include <limits>
 #include <thread>
+#include <utility>
 
 namespace sensors
 {

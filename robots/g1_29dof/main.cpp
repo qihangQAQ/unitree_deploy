@@ -5,6 +5,8 @@
 #include "State_Mimic.h"
 #include "State_RLDepth.h"
 
+#include <unitree/robot/channel/channel_factory.hpp>
+
 #include <csignal>
 #include <stdexcept>
 
@@ -19,6 +21,21 @@ volatile std::sig_atomic_t stop_requested = 0;
 void handle_signal(int)
 {
     stop_requested = 1;
+}
+
+// Call explicit factory cleanup when the installed SDK2 provides it. Keeping
+// the member access dependent on Factory lets older SDK2 headers compile too.
+template <typename Factory>
+auto release_channel_factory(Factory* factory, int) -> decltype(factory->Release(), void())
+{
+    factory->Release();
+}
+
+template <typename Factory>
+void release_channel_factory(Factory*, long)
+{
+    // Older SDK2 owns the factory lifetime internally. Publishers/subscribers
+    // must already be destroyed before reaching this fallback.
 }
 
 void lock_lowcmd()
@@ -120,7 +137,7 @@ int main(int argc, char** argv)
         FSMState::lowcmd->stop();
         FSMState::lowcmd.reset();
         FSMState::lowstate.reset();
-        unitree::robot::ChannelFactory::Instance()->Release();
+        release_channel_factory(unitree::robot::ChannelFactory::Instance(), 0);
         dds_initialized = false;
         return 0;
     } catch (const std::exception& error) {
@@ -131,7 +148,7 @@ int main(int argc, char** argv)
         }
         FSMState::lowstate.reset();
         if (dds_initialized) {
-            unitree::robot::ChannelFactory::Instance()->Release();
+            release_channel_factory(unitree::robot::ChannelFactory::Instance(), 0);
         }
         return 1;
     }

@@ -19,7 +19,7 @@ robots/g1_29dof/
   tools/depth_capture.cpp        深度图采集工具
   tests/                         深度预处理和 ONNX 接口测试
 include/                          通用状态机、观测与动作处理
-thirdparty/                       x86_64 / ARM64 ONNX Runtime
+thirdparty/                       x86_64 / ARM64 ONNX Runtime、G1 DDS 封装及 HG 消息头文件
 ```
 
 ## 环境依赖
@@ -28,7 +28,13 @@ thirdparty/                       x86_64 / ARM64 ONNX Runtime
 - 已安装 Unitree SDK2、Cyclone DDS，以及 Boost.Program_options、yaml-cpp、Eigen3、fmt、spdlog。
 - 使用深度相机时，板载电脑需安装 ROS 2 的 `rclcpp`、`sensor_msgs` 和能发布深度图的相机驱动；启动脚本还需要 `python3-yaml`。
 
-项目使用的头文件和库按当前 CMake 配置从系统路径及 `/usr/local` 查找。首次构建前请确认 SDK2 和 DDS 已在目标机器安装。G1 板载环境为 **Ubuntu 20.04 + ROS 2 Foxy + ARM64/aarch64**；开发机可以使用自己的 ROS 2 安装，例如 Humble。
+G1 所需的 `dds_wrapper` 封装头文件和 HG 消息头文件已分别放在 `thirdparty/unitree_dds_wrapper`、`thirdparty/unitree_sdk2_hg`，同步源码时应一起复制。后者包含 `LowCmd_.hpp`、`LowState_.hpp` 及其全部消息依赖，避免板载 SDK2 缺少 HG 头文件导致编译失败。它们是与 CPU 架构无关的 C++ 头文件。
+
+底层 SDK2 和 DDS 仍需在目标机器配套安装。CMake 会在标准库搜索位置及 `/opt/unitree_robotics/lib`、`/opt/unitree_robotics/lib64` 查找 SDK2，并按板载 `unitree_sdk2Targets.cmake` 中的依赖布局选择同一安装下的 SDK/DDS C 头文件、DDS C++ 头文件及 DDS 库。例如选定 `/opt/unitree_robotics/lib/libunitree_sdk2.a` 后，头文件使用 `/opt/unitree_robotics/include` 和 `/opt/unitree_robotics/include/ddscxx`，DDS 库使用同目录的 `libddscxx.so` 和 `libddsc.so`。三个库均以完整路径链接；不再添加写死的 `/usr/local/include/ddscxx`、`/usr/local/include/iceoryx/v2.0.2`，也不靠裸库名 `ddsc`、`ddscxx` 搜索系统库。
+
+内置 DDS 封装和 HG 消息头文件仍排在 SDK/DDS 头文件之前。配套文件缺失时会在配置阶段报错，不会回退到其他 SDK 或 ROS DDS 安装；此路径绑定不要求加载 `unitree_sdk2Config.cmake`。若 SDK2 库安装在其他位置，可用环境变量 `UNITREE_SDK2_LIBRARY=/实际路径/libunitree_sdk2.a ./build.sh` 指定板载库，或手动向 CMake 传入同名 `-D` 参数。SDK/DDS 路径每次配置时随库重新推导，支持 `<prefix>/lib`、`<prefix>/lib64` 和 `<prefix>/lib/<architecture>` 布局，DDS 共享库需与 SDK2 库放在同一目录。G1 板载环境为 **Ubuntu 20.04 + ROS 2 Foxy + ARM64/aarch64**；开发机可以使用自己的 ROS 2 安装，例如 Humble。
+
+ROS 2 深度订阅实现单独编译为 `g1_depth_ros2` 静态库，其 ROS 头文件路径和编译定义不会传播到机器人控制代码，避免 Foxy 与 SDK2 的两套 Cyclone DDS 头文件混用。最终程序仍链接 ROS 2 库并保留深度订阅功能；`depth_capture` 直接链接深度后端，无需链接机器人控制库。
 
 ## 构建
 
@@ -60,6 +66,7 @@ UNITREE_DEPLOY_WITH_ROS2=OFF ./build.sh
 | `UNITREE_DEPLOY_BUILD_TESTS` | 构建并运行测试 | `ON` |
 | `UNITREE_DEPLOY_JOBS` | 并行编译任务数 | `2` |
 | `ONNXRUNTIME_ROOT` | 自定义 ONNX Runtime 安装目录 | 按 CPU 架构选择内置版本 |
+| `UNITREE_SDK2_LIBRARY` | 指定 SDK2 库文件，配套 SDK/DDS 头文件及 DDS 库随之选定 | 标准库位置或 `/opt/unitree_robotics/lib{,64}` |
 
 默认可执行文件位于 `robots/g1_29dof/build/g1_ctrl`。控制器根据可执行文件位置寻找 `config/config.yaml`，因此运行时请使用默认 `build/` 目录或下文的安装包布局。`DEPLOY_BUILD_DIR` 虽可改变构建位置，任意目录名不一定能让控制器找到配置。
 
@@ -127,7 +134,7 @@ UNITREE_DEPLOY_ROS_DISTRO=foxy ./run_real_depth.sh eth0
 cmake --install robots/g1_29dof/build --prefix "$PWD/dist/g1_29dof"
 ```
 
-安装目录包含 `bin/`、`lib/` 和 `config/`，可整体复制；`bin/g1_ctrl` 通过相对 `RUNPATH` 查找包内 ONNX Runtime。安装包中的启动入口为 `bin/run_real.sh` 和（启用 ROS 2 时）`bin/run_real_depth.sh`。系统仍需提供 SDK2、DDS 和 ROS 2 依赖。ARM64 构建与动态库检查步骤见 [板载部署指南](BOARD_DEPLOYMENT_ZH.md)。
+安装目录包含 `bin/`、`lib/` 和 `config/`，可整体复制；`bin/g1_ctrl` 通过相对 `RUNPATH` 查找包内 ONNX Runtime，并保留构建时选定的 SDK 库目录以查找配套 DDS 共享库。安装包中的启动入口为 `bin/run_real.sh` 和（启用 ROS 2 时）`bin/run_real_depth.sh`。系统仍需提供 SDK2、DDS 和 ROS 2 依赖；目标机器的 SDK 安装路径需要与构建时一致。ARM64 构建与动态库检查步骤见 [板载部署指南](BOARD_DEPLOYMENT_ZH.md)。
 
 ## 测试与文档
 
@@ -145,5 +152,13 @@ ctest --test-dir robots/g1_29dof/build --output-on-failure
 | --- | --- |
 | 找不到 ROS 2 setup | 设置 `UNITREE_DEPLOY_ROS_DISTRO` 或 `UNITREE_DEPLOY_ROS_SETUP`，确认对应文件存在。 |
 | 构建时 ONNX Runtime 架构不匹配 | 确认在目标机器重新构建，并检查 `ONNXRUNTIME_ROOT` 与 `uname -m`。 |
+| `cannot find -lunitree_sdk2` | 同步最新 G1 CMake 配置并重新执行 CMake；现在会查找 `/opt/unitree_robotics/lib` 并输出 `Unitree SDK2 library: ...`。其他安装位置可通过 `UNITREE_SDK2_LIBRARY` 指定。 |
+| `undefined reference` 指向三参数 `ChannelFactory::Init(..., bool)`，库中只有两参数版本 | SDK 头文件与库混用。同步最新 G1 CMake 配置，确认 `Unitree SDK2 headers` 和 `Unitree SDK2 library` 来自同一安装前缀，再完整重新编译。 |
+| `iox_size`、`iox_chunk` 缺失，或 `ddsi_serdata_ops` 初始化项过多 | 检查是否混用了 `/usr/local/include/ddscxx` 与 `/opt/unitree_robotics/include/dds`。同步最新 G1 CMake 配置，将 SDK、DDS C/C++ 头文件和库统一到同一套安装后完整重新编译。 |
+| 找不到 `unitree/idl/hg/LowCmd_.hpp` | 同步 `thirdparty/unitree_sdk2_hg` 和最新 G1 `CMakeLists.txt`，在板载重新执行 CMake。 |
+| DDS 枚举重复定义、`dds_create_topic_sertype` 等类型或函数缺失 | 检查报错是否同时出现 `/opt/ros/foxy/include/dds` 与 `/usr/local/include/dds`；同步最新 G1 CMake 配置，使 ROS 2 依赖只用于深度后端编译。 |
+| `ChannelPublisher::Write` 提示只接受一个参数 | 同步最新 `thirdparty/unitree_dds_wrapper`，封装已使用兼容新旧 SDK2 的单参数调用。 |
+| `ChannelFactory` 没有 `Release` 成员 | 同步最新 `robots/g1_29dof/main.cpp`，退出清理会在编译时判断 SDK2 是否提供该接口。 |
+| make 提示 `Clock skew detected` | 校准板载系统时间，排除 rsync 中的构建目录，再按板载部署指南重新生成构建目录。 |
 | 启动时提示 `rt/lowcmd` 已被占用 | 停止另一个低层控制程序后再启动本程序。 |
 | 不能进入 `DepthWalk` | 查看拒绝切换的日志，检查深度图、CameraInfo、内参、帧超时和策略文件。 |

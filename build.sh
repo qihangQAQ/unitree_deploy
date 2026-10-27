@@ -28,6 +28,9 @@ fi
 if [[ -n "${ONNXRUNTIME_ROOT:-}" ]]; then
   DEPLOY_CMAKE_ARGS+=( -DONNXRUNTIME_ROOT="${ONNXRUNTIME_ROOT}" )
 fi
+if [[ -n "${UNITREE_SDK2_LIBRARY:-}" ]]; then
+  DEPLOY_CMAKE_ARGS+=( -DUNITREE_SDK2_LIBRARY="${UNITREE_SDK2_LIBRARY}" )
+fi
 
 cmake "${DEPLOY_CMAKE_ARGS[@]}"
 cmake --build "${DEPLOY_BUILD_DIR}" --parallel "${UNITREE_DEPLOY_JOBS:-2}"
